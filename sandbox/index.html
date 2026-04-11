@@ -1,0 +1,191 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI GitHub Dev</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        h1 { color: #58a6ff; }
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            background: #161b22;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #micBtn   { background: #238636; color: white; }
+        #micBtn.recording { background: #da3633; }
+        #submitBtn { background: #1f6feb; color: white; }
+        #status   { margin-top: 20px; padding: 10px; background: #161b22; border-radius: 6px; }
+        #prLink   { color: #58a6ff; }
+        .label    { color: #8b949e; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>🤖 AI GitHub Dev</h1>
+
+    <div class="label">GitHub Repo URL</div>
+    <input type="text" id="repoUrl"
+        placeholder="https://github.com/username/repo"
+        value="https://github.com/ABHISHEKKUMAR707/ai-github-dev" />
+
+    <div class="label">What do you want to build?</div>
+    <textarea id="intentText" rows="3"
+        placeholder="Add an attendance tracker feature..."></textarea>
+
+    <br/>
+    <button id="micBtn" onclick="toggleVoice()">🎤 Hold to Speak</button>
+    <button id="submitBtn" onclick="runAgent()">🚀 Run Agent</button>
+
+    <div id="status">Status: Ready</div>
+
+    <script>
+        let token        = localStorage.getItem("jwt_token") || "";
+        let recognition  = null;
+        let isRecording  = false;
+
+        // ── Voice Input ──────────────────────────────────
+        function toggleVoice() {
+            if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
+                alert("Speech recognition not supported. Use Chrome or Edge.");
+                return;
+            }
+
+            if (isRecording) {
+                recognition.stop();
+                return;
+            }
+
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition             = new SpeechRecognition();
+            recognition.lang        = "en-US";
+            recognition.continuous  = false;
+
+            recognition.onstart = () => {
+                isRecording = true;
+                document.getElementById("micBtn").textContent = "🔴 Recording...";
+                document.getElementById("micBtn").classList.add("recording");
+                document.getElementById("status").textContent = "Status: Listening...";
+            };
+
+            recognition.onresult = (event) => {
+                const text = event.results[0][0].transcript;
+                document.getElementById("intentText").value = text;
+                document.getElementById("status").textContent = "Status: Got: " + text;
+            };
+
+            recognition.onend = () => {
+                isRecording = false;
+                document.getElementById("micBtn").textContent = "🎤 Hold to Speak";
+                document.getElementById("micBtn").classList.remove("recording");
+            };
+
+            recognition.start();
+        }
+
+        // ── Run Agent ────────────────────────────────────
+        async function runAgent() {
+            const repoUrl    = document.getElementById("repoUrl").value;
+            const userIntent = document.getElementById("intentText").value;
+
+            if (!repoUrl || !userIntent) {
+                alert("Please fill in repo URL and intent.");
+                return;
+            }
+
+            if (!token) {
+                document.getElementById("status").innerHTML =
+                    "Please <a href='/auth/github/login' style='color:#58a6ff'>login with GitHub</a> first.";
+                return;
+            }
+
+            document.getElementById("status").textContent = "Status: Starting agent...";
+
+            try {
+                // Trigger agent
+                const response = await fetch("/agent/run", {
+                    method:  "POST",
+                    headers: {
+                        "Content-Type":  "application/json",
+                        "Authorization": "Bearer " + token
+                    },
+                    body: JSON.stringify({
+                        repo_url:    repoUrl,
+                        user_intent: userIntent
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || "Agent failed to start");
+                }
+
+                document.getElementById("status").textContent =
+                    "Status: Agent running... task_id: " + data.task_id;
+
+                // Poll for result
+                pollStatus(data.task_id);
+
+            } catch (err) {
+                document.getElementById("status").textContent = "Error: " + err.message;
+            }
+        }
+
+        // ── Poll Status ──────────────────────────────────
+        async function pollStatus(taskId) {
+            const interval = setInterval(async () => {
+                try {
+                    const response = await fetch("/agent/status/" + taskId, {
+                        headers: { "Authorization": "Bearer " + token }
+                    });
+
+                    const data = await response.json();
+
+                    if (data.status === "done") {
+                        clearInterval(interval);
+                        const prUrl = data.result?.pr_url;
+                        document.getElementById("status").innerHTML =
+                            "✅ Done! PR: <a id='prLink' href='" + prUrl + "' target='_blank'>" + prUrl + "</a>";
+                    } else if (data.status === "failed") {
+                        clearInterval(interval);
+                        document.getElementById("status").textContent =
+                            "❌ Failed: " + JSON.stringify(data.error);
+                    } else {
+                        document.getElementById("status").textContent =
+                            "Status: " + data.status + "...";
+                    }
+                } catch (err) {
+                    clearInterval(interval);
+                }
+            }, 3000);
+        }
+
+        // ── Save JWT after login ─────────────────────────
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get("token")) {
+            token = urlParams.get("token");
+            localStorage.setItem("jwt_token", token);
+        }
+    </script>
+</body>
+</html>
