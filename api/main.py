@@ -1,6 +1,6 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import auth
+from api.routes import auth, agent
 from config.settings import settings
 
 app = FastAPI(
@@ -18,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(agent.router)
 
 @app.get('/health')
 async def health():
