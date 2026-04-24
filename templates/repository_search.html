@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Repository Search</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f6f8fa;
+            color: #24292e;
+        }
+        .container {
+            background: white;
+            border-radius: 6px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(27,31,35,0.12);
+            margin-bottom: 24px;
+        }
+        h1 {
+            color: #24292e;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #e1e4e8;
+            padding-bottom: 12px;
+        }
+        .search-form {
+            display: flex;
+            gap: 12px;
+            align-items: end;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        label {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        input[type="text"], select {
+            padding: 8px 12px;
+            border: 1px solid #d1d5da;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 200px;
+        }
+        input[type="text"]:focus, select:focus {
+            border-color: #0366d6;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(3,102,214,0.1);
+        }
+        .btn {
+            background-color: #0366d6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            height: 36px;
+        }
+        .btn:hover {
+            background-color: #0256d0;
+        }
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+        .alert-error {
+            background-color: #ffeaea;
+            border: 1px solid #f97583;
+            color: #d73a49;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+            padding: 16px;
+            background-color: #f6f8fa;
+            border-radius: 6px;
+        }
+        .user-avatar {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+        }
+        .user-details h3 {
+            margin: 0 0 4px 0;
+            color: #24292e;
+        }
+        .user-details p {
+            margin: 4px 0;
+            color: #586069;
+            font-size: 14px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #f6f8fa;
+            padding: 16px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: 600;
+            color: #0366d6;
+            display: block;
+        }
+        .stat-label {
+            color: #586069;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .repositories {
+            display: grid;
+            gap: 16px;
+        }
+        .repo-card {
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            padding: 16px;
+            background: white;
+        }
+        .repo-header {
+            display: flex;
+            justify-content: between;
+            align-items: start;
+            margin-bottom: 8px;
+        }
+        .repo-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #0366d6;
+            text-decoration: none;
+            margin-right: auto;
+        }
+        .repo-name:hover {
+            text-decoration: underline;
+        }
+        .repo-visibility {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 500;
+            margin-left: 8px;
+        }
+        .repo-public {
+            background-color: #f0fff4;
+            color: #28a745;
+            border: 1px solid #28a745;
+        }
+        .repo-private {
+            background-color: #fff8f0;
+            color: #fb8500;
+            border: 1px solid #fb8500;
+        }
+        .repo-fork {
+            background-color: #f6f8fa;
+            color: #586069;
+            border: 1px solid #586069;
+        }
+        .repo-description {
+            color: #586069;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+        .repo-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #586069;
+            align-items: center;
+        }
+        .repo-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .language-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #586069;
+        }
+        .languages {
+            margin-top: 16px;
+        }
+        .language-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .language-tag {
+            background-color: #f6f8fa;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: #24292e;
+        }
+        @media (max-width: 768px) {
+            .search-form {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .form-group {
+                width: 100%;
+            }
+            input[type="text"], select {
+                min-width: auto;
+                width: 100%;
+            }
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .user-info {
+                flex-direction: column;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 GitHub Repository Search</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="POST" class="search-form">
+            <div class="form-group">
+                <label for="username">GitHub Username</label>
+                <input type="text" 
+                       id="username" 
+                       name="username" 
+                       placeholder="Enter GitHub username (e.g., Vitthal)" 
+                       value="{{ request.form.username if request.form.username else 'Vitthal' }}"
+                       required>
+            </div>
+            
+            <div class="form-group">
+                <label for="filter">Repository Type</label>
+                <select id="filter" name="filter">
+                    <option value="all" {{ 'selected' if current_filter == 'all' else '' }}>All Repositories</option>
+                    <option value="sources" {{ 'selected' if current_filter == 'sources' else '' }}>Source Repositories</option>
+                    <option value="forks" {{ 'selected' if current_filter == 'forks' else '' }}>Forked Repositories</option>
+                    <option value="public" {{ 'selected' if current_filter == 'public' else '' }}>Public Repositories</option>
+                    <option value="private" {{ 'selected' if current_filter == 'private' else '' }}>Private Repositories</option>
+                </select>
+            </div>
+            
+            <button type="submit" class="btn">Search Repositories</button>
+        </form>
+    </div>
+    
+    {% if search_performed %}
+    <div class="container">
+        <!-- User Information -->
+        {% if user_info %}
+        <div class="user-info">
+            <img src="{{ user_info.avatar_url }}" alt="{{ user_info.login }}" class="user-avatar">
+            <div class="user-details">
+                <h3>{{ user_info.name or user_info.login }}</h3>
+                <p><strong>@{{ user_info.login }}</strong></p>
+                {% if user_info.bio %}<p>{{ user_info.bio }}</p>{% endif %}
+                {% if user_info.location %}<p>📍 {{ user_info.location }}</p>{% endif %}
+                {% if user_info.company %}<p>🏢 {{ user_info.company }}</p>{% endif %}
+                <p>👥 {{ user_info.followers }} followers · {{ user_info.following }} following</p>
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Statistics -->
+        {% if stats %}
+        <div class="stats">
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.total_count }}</span>
+                <div class="stat-label">Total Repositories</div>
+            </div>
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.public_count }}</span>
+                <div class="stat-label">Public Repositories</div>
+            </div>
+            {% if stats.private_count > 0 %}
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.private_count }}</span>
+                <div class="stat-label">Private Repositories</div>
+            </div>
+            {% endif %}
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.fork_count }}</span>
+                <div class="stat-label">Forks</div>
+            </div>
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.source_count }}</span>
+                <div class="stat-label">Original Repositories</div>
+            </div>
+            <div class="stat-card">
+                <span class="stat-number">{{ stats.total_stars }}</span>
+                <div class="stat-label">Total Stars</div>
+            </div>
+        </div>
+        
+        {% if stats.languages %}
+        <div class="languages">
+            <h3>Programming Languages Used:</h3>
+            <div class="language-list">
+                {% for language, count in stats.languages.items() %}
+                <span class="language-tag">{{ language }} ({{ count }})</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+    
+    <div class="container">
+        <h2>
+            {% if current_filter == 'all' %}
+                All Repositories ({{ filtered_stats.total_count if filtered_stats else 0 }})
+            {% elif current_filter == 'sources' %}
+                Source Repositories ({{ filtered_stats.total_count if filtered_stats else 0 }})
+            {% elif current_filter == 'forks' %}
+                Forked Repositories ({{ filtered_stats.total_count if filtered_stats else 0 }})
+            {% elif current_filter == 'public' %}
+                Public Repositories ({{ filtered_stats.total_count if filtered_stats else 0 }})
+            {% elif current_filter == 'private' %}
+                Private Repositories ({{ filtered_stats.total_count if filtered_stats else 0 }})
+            {% endif %}
+        </h2>
+        
+        {% if repositories %}
+        <div class="repositories">
+            {% for repo in repositories %}
+            <div class="repo-card">
+                <div class="repo-header">
+                    <a href="{{ repo.html_url }}" target="_blank" class="repo-name">{{ repo.name }}</a>
+                    <div>
+                        {% if repo.private %}
+                            <span class="repo-visibility repo-private">Private</span>
+                        {% else %}
+                            <span class="repo-visibility repo-public">Public</span>
+                        {% endif %}
+                        {% if repo.fork %}
+                            <span class="repo-visibility repo-fork">Fork</span>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                {% if repo.description %}
+                <p class="repo-description">{{ repo.description }}</p>
+                {% endif %}
+                
+                <div class="repo-meta">
+                    {% if repo.language %}
+                    <span class="repo-meta-item">
+                        <span class="language-dot" style="background-color: #{{ '%06x' % (repo.language|hash % 16777215) }};"></span>
+                        {{ repo.language }}
+                    </span>
+                    {% endif %}
+                    
+                    {% if repo.stargazers_count > 0 %}
+                    <span class="repo-meta-item">
+                        ⭐ {{ repo.stargazers_count }}
+                    </span>
+                    {% endif %}
+                    
+                    {% if repo.forks_count > 0 %}
+                    <span class="repo-meta-item">
+                        🍴 {{ repo.forks_count }}
+                    </span>
+                    {% endif %}
+                    
+                    <span class="repo-meta-item">
+                        Updated {{ repo.updated_at[:10] }}
+                    </span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>No repositories found matching the selected criteria.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <script>
+        // Auto-focus on username input
+        document.addEventListener('DOMContentLoaded', function() {
+            const usernameInput = document.getElementById('username');
+            if (usernameInput && !usernameInput.value) {
+                usernameInput.focus();
+            }
+        });
+        
+        // Add loading state to form submission
+        document.querySelector('form').addEventListener('submit', function() {
+            const button = document.querySelector('.btn');
+            button.textContent = 'Searching...';
+            button.disabled = true;
+        });
+    </script>
+</body>
+</html>
