@@ -1,8 +1,7 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from api.routes import auth, agent, voice
+from api.routes import auth, agent, voice, repos
 from api.middleware.rate_limit import RateLimitMiddleware
 from config.settings import settings
 
@@ -24,6 +23,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(agent.router)
 app.include_router(voice.router)
+app.include_router(repos.router)
 
 @app.get("/health")
 async def health():

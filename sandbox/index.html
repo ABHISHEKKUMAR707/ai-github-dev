@@ -5,68 +5,174 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI GitHub Dev</title>
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
+            max-width: 700px;
+            margin: 40px auto;
             padding: 20px;
             background: #0d1117;
             color: #c9d1d9;
         }
-        h1 { color: #58a6ff; }
-        input, textarea {
+        h1 { color: #58a6ff; margin-bottom: 24px; }
+        label { color: #8b949e; font-size: 14px; display: block; margin-bottom: 6px; }
+        select, textarea {
             width: 100%;
             padding: 10px;
-            margin: 10px 0;
+            margin-bottom: 16px;
             background: #161b22;
             border: 1px solid #30363d;
             color: #c9d1d9;
             border-radius: 6px;
-            font-size: 16px;
+            font-size: 15px;
         }
+        select option { background: #161b22; }
+        textarea { resize: vertical; }
+        .btn-row { display: flex; gap: 10px; margin-bottom: 16px; }
         button {
             padding: 10px 20px;
-            margin: 5px;
             border: none;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 15px;
+            font-weight: bold;
         }
-        #micBtn   { background: #238636; color: white; }
+        #micBtn    { background: #238636; color: white; flex: 1; }
         #micBtn.recording { background: #da3633; }
-        #submitBtn { background: #1f6feb; color: white; }
-        #status   { margin-top: 20px; padding: 10px; background: #161b22; border-radius: 6px; }
-        #prLink   { color: #58a6ff; }
-        .label    { color: #8b949e; font-size: 14px; }
+        #submitBtn { background: #1f6feb; color: white; flex: 1; }
+        #loginBtn  { background: #238636; color: white; width: 100%; padding: 12px; }
+        #status {
+            margin-top: 16px;
+            padding: 12px;
+            background: #161b22;
+            border-radius: 6px;
+            min-height: 48px;
+            line-height: 1.6;
+        }
+        #prLink { color: #58a6ff; }
+        #loginSection { text-align: center; padding: 40px 0; }
+        #appSection { display: none; }
+        .repo-info {
+            font-size: 12px;
+            color: #8b949e;
+            margin-top: -12px;
+            margin-bottom: 16px;
+        }
     </style>
 </head>
 <body>
     <h1>🤖 AI GitHub Dev</h1>
 
-    <div class="label">GitHub Repo URL</div>
-    <input type="text" id="repoUrl"
-        placeholder="https://github.com/username/repo"
-        value="https://github.com/ABHISHEKKUMAR707/ai-github-dev" />
+    <!-- Login Section -->
+    <div id="loginSection">
+        <p style="color:#8b949e; margin-bottom:20px;">
+            Login with GitHub to start modifying your repos with AI
+        </p>
+        <button id="loginBtn" onclick="window.location.href='/auth/github/login'">
+            Login with GitHub
+        </button>
+    </div>
 
-    <div class="label">What do you want to build?</div>
-    <textarea id="intentText" rows="3"
-        placeholder="Add an attendance tracker feature..."></textarea>
+    <!-- App Section -->
+    <div id="appSection">
+        <p id="welcomeMsg" style="color:#8b949e; margin-bottom:20px;"></p>
 
-    <br/>
-    <button id="micBtn" onclick="toggleVoice()">🎤 Hold to Speak</button>
-    <button id="submitBtn" onclick="runAgent()">🚀 Run Agent</button>
+        <label>Select Repository</label>
+        <select id="repoSelect" onchange="onRepoSelected()">
+            <option value="">-- Loading your repos... --</option>
+        </select>
+        <div class="repo-info" id="repoInfo"></div>
 
-    <div id="status">Status: Ready</div>
+        <label>What do you want to build?</label>
+        <textarea id="intentText" rows="3"
+            placeholder="e.g. Add an attendance tracker feature with mark and get functions">
+        </textarea>
+
+        <div class="btn-row">
+            <button id="micBtn" onclick="toggleVoice()">🎤 Hold to Speak</button>
+            <button id="submitBtn" onclick="runAgent()">🚀 Run Agent</button>
+        </div>
+
+        <div id="status">Status: Ready</div>
+    </div>
 
     <script>
-        let token        = localStorage.getItem("jwt_token") || "";
-        let recognition  = null;
-        let isRecording  = false;
+        let token       = localStorage.getItem("jwt_token") || "";
+        let recognition = null;
+        let isRecording = false;
+        let selectedRepo = null;
+
+        // ── Init ─────────────────────────────────────────
+        async function init() {
+            // Save token from URL if present
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get("token")) {
+                token = urlParams.get("token");
+                localStorage.setItem("jwt_token", token);
+                window.history.replaceState({}, "", "/");
+            }
+
+            if (token) {
+                document.getElementById("loginSection").style.display = "none";
+                document.getElementById("appSection").style.display   = "block";
+                await loadRepos();
+            }
+        }
+
+        // ── Load Repos ───────────────────────────────────
+        async function loadRepos() {
+            try {
+                document.getElementById("status").textContent = "Loading your repositories...";
+
+                const response = await fetch("/repos/list", {
+                    headers: { "Authorization": "Bearer " + token }
+                });
+
+                if (response.status === 401) {
+                    logout();
+                    return;
+                }
+
+                const data = await response.json();
+
+                document.getElementById("welcomeMsg").textContent =
+                    "Welcome " + data.username + " — " + data.count + " repos found";
+
+                const select = document.getElementById("repoSelect");
+                select.innerHTML = '<option value="">-- Select a repository --</option>';
+
+                data.repos.forEach(repo => {
+                    const option    = document.createElement("option");
+                    option.value    = JSON.stringify(repo);
+                    option.textContent = repo.full_name + (repo.private ? " 🔒" : "");
+                    select.appendChild(option);
+                });
+
+                document.getElementById("status").textContent = "Status: Ready — select a repo above";
+
+            } catch (err) {
+                document.getElementById("status").textContent = "Error loading repos: " + err.message;
+            }
+        }
+
+        // ── On Repo Selected ─────────────────────────────
+        function onRepoSelected() {
+            const select = document.getElementById("repoSelect");
+            if (!select.value) return;
+
+            selectedRepo = JSON.parse(select.value);
+            document.getElementById("repoInfo").textContent =
+                "Branch: " + selectedRepo.default_branch +
+                (selectedRepo.description ? " | " + selectedRepo.description : "");
+
+            document.getElementById("status").textContent =
+                "Status: Ready — repo selected: " + selectedRepo.full_name;
+        }
 
         // ── Voice Input ──────────────────────────────────
         function toggleVoice() {
             if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
-                alert("Speech recognition not supported. Use Chrome or Edge.");
+                alert("Use Chrome or Edge for voice input.");
                 return;
             }
 
@@ -104,24 +210,21 @@
 
         // ── Run Agent ────────────────────────────────────
         async function runAgent() {
-            const repoUrl    = document.getElementById("repoUrl").value;
-            const userIntent = document.getElementById("intentText").value;
-
-            if (!repoUrl || !userIntent) {
-                alert("Please fill in repo URL and intent.");
+            if (!selectedRepo) {
+                alert("Please select a repository first.");
                 return;
             }
 
-            if (!token) {
-                document.getElementById("status").innerHTML =
-                    "Please <a href='/auth/github/login' style='color:#58a6ff'>login with GitHub</a> first.";
+            const userIntent = document.getElementById("intentText").value.trim();
+            if (!userIntent) {
+                alert("Please describe what you want to build.");
                 return;
             }
 
             document.getElementById("status").textContent = "Status: Starting agent...";
+            document.getElementById("submitBtn").disabled = true;
 
             try {
-                // Trigger agent
                 const response = await fetch("/agent/run", {
                     method:  "POST",
                     headers: {
@@ -129,7 +232,7 @@
                         "Authorization": "Bearer " + token
                     },
                     body: JSON.stringify({
-                        repo_url:    repoUrl,
+                        repo_url:    selectedRepo.clone_url,
                         user_intent: userIntent
                     })
                 });
@@ -141,18 +244,18 @@
                 }
 
                 document.getElementById("status").textContent =
-                    "Status: Agent running... task_id: " + data.task_id;
+                    "⏳ Agent running... checking every 5 seconds";
 
-                // Poll for result
                 pollStatus(data.task_id);
 
             } catch (err) {
-                document.getElementById("status").textContent = "Error: " + err.message;
+                document.getElementById("status").textContent = "❌ Error: " + err.message;
+                document.getElementById("submitBtn").disabled = false;
             }
         }
 
         // ── Poll Status ──────────────────────────────────
-        async function pollStatus(taskId) {
+        function pollStatus(taskId) {
             const interval = setInterval(async () => {
                 try {
                     const response = await fetch("/agent/status/" + taskId, {
@@ -163,29 +266,42 @@
 
                     if (data.status === "done") {
                         clearInterval(interval);
+                        document.getElementById("submitBtn").disabled = false;
                         const prUrl = data.result?.pr_url;
-                        document.getElementById("status").innerHTML =
-                            "✅ Done! PR: <a id='prLink' href='" + prUrl + "' target='_blank'>" + prUrl + "</a>";
+                        if (prUrl) {
+                            document.getElementById("status").innerHTML =
+                                "✅ Done! PR created: <a id='prLink' href='" +
+                                prUrl + "' target='_blank'>" + prUrl + "</a>";
+                        } else {
+                            document.getElementById("status").textContent =
+                                "✅ Done! No PR created.";
+                        }
                     } else if (data.status === "failed") {
                         clearInterval(interval);
+                        document.getElementById("submitBtn").disabled = false;
                         document.getElementById("status").textContent =
                             "❌ Failed: " + JSON.stringify(data.error);
                     } else {
                         document.getElementById("status").textContent =
-                            "Status: " + data.status + "...";
+                            "⏳ Status: " + data.status + "...";
                     }
                 } catch (err) {
                     clearInterval(interval);
+                    document.getElementById("submitBtn").disabled = false;
                 }
-            }, 3000);
+            }, 5000);  // poll every 5 seconds instead of 3
         }
 
-        // ── Save JWT after login ─────────────────────────
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get("token")) {
-            token = urlParams.get("token");
-            localStorage.setItem("jwt_token", token);
+        // ── Logout ───────────────────────────────────────
+        function logout() {
+            localStorage.removeItem("jwt_token");
+            token = "";
+            document.getElementById("loginSection").style.display = "block";
+            document.getElementById("appSection").style.display   = "none";
         }
+
+        // Start
+        init();
     </script>
 </body>
 </html>
