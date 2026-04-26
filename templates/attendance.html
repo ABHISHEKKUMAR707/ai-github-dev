@@ -1,0 +1,6 @@
+<div class="attendance-record status-${record.status}">
+                        <strong>User ID:</strong> ${record.user_id}<br>
+                        <strong>Status:</strong> ${record.status.charAt(0).toUpperCase() + record.status.slice(1)}<br>
+                        <strong>Date:</strong> ${record.date}<br>
+                        <strong>Time:</strong> ${new Date(record.timestamp).toLocaleTimeString()}
+                    </div>
