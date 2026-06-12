@@ -2,6 +2,8 @@
 import git
 from github import Github
 from agent.state import AgentState, AgentStatus
+from agent.streaming.event_bus import publish_event
+from agent.streaming.events import StreamEvent, EventType
 import structlog
 
 logger = structlog.get_logger()
@@ -12,27 +14,40 @@ REPOS_DIR = "repos"
 def run(state: AgentState) -> AgentState:
     logger.info("github_commit_started", session_id=state["session_id"])
 
-    try:
-        repo_url = state["repo_url"]
+    publish_event(StreamEvent(
+        event_type=EventType.COMMIT_STARTED,
+        session_id=state["session_id"],
+        message="Preparing to commit changes...",
+        data={"files": len(state["file_changes"])}
+    ))
 
-        # Remove .git suffix for GitHub API
+    try:
+        repo_url  = state["repo_url"]
         clean_url = repo_url.rstrip("/")
         if clean_url.endswith(".git"):
             clean_url = clean_url[:-4]
 
-        repo_name = clean_url.split("/")[-1]
+        repo_name          = clean_url.split("/")[-1]
+        local_path_with    = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}.git")
+        local_path_without = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}")
 
-        # Find local cloned folder — try both with and without .git
-        local_path = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}.git")
-        if not os.path.exists(local_path):
-            local_path = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}")
-
-        logger.info("using_local_path", path=local_path)
+        if os.path.exists(local_path_with):
+            local_path = local_path_with
+        elif os.path.exists(local_path_without):
+            local_path = local_path_without
+        else:
+            raise Exception(f"Repo not found locally: {local_path_with}")
 
         local_repo  = git.Repo(local_path)
         branch_name = f"ai-dev/{state['session_id'][:8]}"
-
         local_repo.git.checkout("-b", branch_name)
+
+        publish_event(StreamEvent(
+            event_type=EventType.COMMIT_WRITING,
+            session_id=state["session_id"],
+            message=f"Writing {len(state['file_changes'])} files...",
+            data={"branch": branch_name}
+        ))
 
         for change in state["file_changes"]:
             file_full_path = os.path.join(local_path, change["file_path"])
@@ -42,22 +57,24 @@ def run(state: AgentState) -> AgentState:
             logger.info("file_written", path=change["file_path"])
 
         local_repo.git.add("--all")
-
         commit_message = f"AI: {state['cleaned_intent']}\n\nChanges:\n" + \
             "\n".join(f"- {c['file_path']}" for c in state["file_changes"])
-
         local_repo.index.commit(commit_message)
+
+        publish_event(StreamEvent(
+            event_type=EventType.COMMIT_PUSHING,
+            session_id=state["session_id"],
+            message="Pushing branch to GitHub...",
+            data={}
+        ))
 
         origin = local_repo.remote("origin")
         origin.push(branch_name)
 
-        # Use clean URL without .git for GitHub API
         github_client = Github(state["github_token"])
         repo_full     = clean_url.replace("https://github.com/", "")
-
         logger.info("creating_pr", repo=repo_full, branch=branch_name)
-
-        github_repo = github_client.get_repo(repo_full)
+        github_repo   = github_client.get_repo(repo_full)
 
         pr = github_repo.create_pull(
             title=f"AI: {state['cleaned_intent']}",
@@ -69,6 +86,20 @@ def run(state: AgentState) -> AgentState:
             head=branch_name,
             base=github_repo.default_branch
         )
+
+        publish_event(StreamEvent(
+            event_type=EventType.PR_CREATED,
+            session_id=state["session_id"],
+            message=f"Pull Request created successfully!",
+            data={"pr_url": pr.html_url, "branch": branch_name}
+        ))
+
+        publish_event(StreamEvent(
+            event_type=EventType.AGENT_COMPLETED,
+            session_id=state["session_id"],
+            message="Agent completed successfully",
+            data={"pr_url": pr.html_url}
+        ))
 
         logger.info("pr_created", pr_url=pr.html_url)
 
@@ -82,6 +113,14 @@ def run(state: AgentState) -> AgentState:
 
     except Exception as e:
         logger.error("github_commit_failed", error=str(e))
+
+        publish_event(StreamEvent(
+            event_type=EventType.AGENT_FAILED,
+            session_id=state["session_id"],
+            message=f"GitHub commit failed: {str(e)}",
+            data={"error": str(e)}
+        ))
+
         return {
             **state,
             "status":        AgentStatus.FAILED,
