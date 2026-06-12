@@ -26,7 +26,6 @@
             border-radius: 6px;
             font-size: 15px;
         }
-        select option { background: #161b22; }
         textarea { resize: vertical; }
         .btn-row { display: flex; gap: 10px; margin-bottom: 16px; }
         button {
@@ -49,21 +48,24 @@
             min-height: 48px;
             line-height: 1.6;
         }
-        #prLink { color: #58a6ff; }
-        #loginSection { text-align: center; padding: 40px 0; }
-        #appSection { display: none; }
-        .repo-info {
+        #logs {
+            margin-top: 10px;
+            padding: 10px;
+            background: #0d1117;
+            border-radius: 6px;
             font-size: 12px;
             color: #8b949e;
-            margin-top: -12px;
-            margin-bottom: 16px;
+            display: none;
         }
+        #loginSection { text-align: center; padding: 40px 0; }
+        #appSection { display: none; }
+        .repo-info { font-size: 12px; color: #8b949e; margin-top: -12px; margin-bottom: 16px; }
+        a { color: #58a6ff; }
     </style>
 </head>
 <body>
     <h1>🤖 AI GitHub Dev</h1>
 
-    <!-- Login Section -->
     <div id="loginSection">
         <p style="color:#8b949e; margin-bottom:20px;">
             Login with GitHub to start modifying your repos with AI
@@ -73,7 +75,6 @@
         </button>
     </div>
 
-    <!-- App Section -->
     <div id="appSection">
         <p id="welcomeMsg" style="color:#8b949e; margin-bottom:20px;"></p>
 
@@ -85,7 +86,7 @@
 
         <label>What do you want to build?</label>
         <textarea id="intentText" rows="3"
-            placeholder="e.g. Add an attendance tracker feature with mark and get functions">
+            placeholder="e.g. Add an attendance tracker feature">
         </textarea>
 
         <div class="btn-row">
@@ -94,17 +95,16 @@
         </div>
 
         <div id="status">Status: Ready</div>
+        <div id="logs"></div>
     </div>
 
     <script>
-        let token       = localStorage.getItem("jwt_token") || "";
-        let recognition = null;
-        let isRecording = false;
+        let token        = localStorage.getItem("jwt_token") || "";
+        let recognition  = null;
+        let isRecording  = false;
         let selectedRepo = null;
 
-        // ── Init ─────────────────────────────────────────
         async function init() {
-            // Save token from URL if present
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get("token")) {
                 token = urlParams.get("token");
@@ -119,110 +119,81 @@
             }
         }
 
-        // ── Load Repos ───────────────────────────────────
         async function loadRepos() {
-            try {
-                document.getElementById("status").textContent = "Loading your repositories...";
-
+            try:
+                document.getElementById("status").textContent = "Loading repositories...";
                 const response = await fetch("/repos/list", {
                     headers: { "Authorization": "Bearer " + token }
                 });
 
-                if (response.status === 401) {
-                    logout();
-                    return;
-                }
+                if (response.status === 401) { logout(); return; }
 
                 const data = await response.json();
-
                 document.getElementById("welcomeMsg").textContent =
                     "Welcome " + data.username + " — " + data.count + " repos found";
 
                 const select = document.getElementById("repoSelect");
                 select.innerHTML = '<option value="">-- Select a repository --</option>';
-
                 data.repos.forEach(repo => {
-                    const option    = document.createElement("option");
-                    option.value    = JSON.stringify(repo);
+                    const option       = document.createElement("option");
+                    option.value       = JSON.stringify(repo);
                     option.textContent = repo.full_name + (repo.private ? " 🔒" : "");
                     select.appendChild(option);
                 });
 
-                document.getElementById("status").textContent = "Status: Ready — select a repo above";
-
+                document.getElementById("status").textContent = "Status: Ready";
             } catch (err) {
-                document.getElementById("status").textContent = "Error loading repos: " + err.message;
+                document.getElementById("status").textContent = "Error: " + err.message;
             }
         }
 
-        // ── On Repo Selected ─────────────────────────────
         function onRepoSelected() {
             const select = document.getElementById("repoSelect");
             if (!select.value) return;
-
             selectedRepo = JSON.parse(select.value);
             document.getElementById("repoInfo").textContent =
                 "Branch: " + selectedRepo.default_branch +
                 (selectedRepo.description ? " | " + selectedRepo.description : "");
-
-            document.getElementById("status").textContent =
-                "Status: Ready — repo selected: " + selectedRepo.full_name;
         }
 
-        // ── Voice Input ──────────────────────────────────
         function toggleVoice() {
             if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
                 alert("Use Chrome or Edge for voice input.");
                 return;
             }
+            if (isRecording) { recognition.stop(); return; }
 
-            if (isRecording) {
-                recognition.stop();
-                return;
-            }
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition             = new SpeechRecognition();
-            recognition.lang        = "en-US";
-            recognition.continuous  = false;
+            const SR    = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SR();
+            recognition.lang       = "en-US";
+            recognition.continuous = false;
 
             recognition.onstart = () => {
                 isRecording = true;
                 document.getElementById("micBtn").textContent = "🔴 Recording...";
                 document.getElementById("micBtn").classList.add("recording");
-                document.getElementById("status").textContent = "Status: Listening...";
+                document.getElementById("status").textContent = "Listening...";
             };
-
-            recognition.onresult = (event) => {
-                const text = event.results[0][0].transcript;
-                document.getElementById("intentText").value = text;
-                document.getElementById("status").textContent = "Status: Got: " + text;
+            recognition.onresult = (e) => {
+                document.getElementById("intentText").value = e.results[0][0].transcript;
+                document.getElementById("status").textContent = "Got voice input!";
             };
-
             recognition.onend = () => {
                 isRecording = false;
                 document.getElementById("micBtn").textContent = "🎤 Hold to Speak";
                 document.getElementById("micBtn").classList.remove("recording");
             };
-
             recognition.start();
         }
 
-        // ── Run Agent ────────────────────────────────────
         async function runAgent() {
-            if (!selectedRepo) {
-                alert("Please select a repository first.");
-                return;
-            }
-
+            if (!selectedRepo) { alert("Please select a repository."); return; }
             const userIntent = document.getElementById("intentText").value.trim();
-            if (!userIntent) {
-                alert("Please describe what you want to build.");
-                return;
-            }
+            if (!userIntent) { alert("Please describe what you want to build."); return; }
 
-            document.getElementById("status").textContent = "Status: Starting agent...";
-            document.getElementById("submitBtn").disabled = true;
+            document.getElementById("status").textContent  = "⏳ Starting agent...";
+            document.getElementById("logs").style.display  = "none";
+            document.getElementById("submitBtn").disabled  = true;
 
             try {
                 const response = await fetch("/agent/run", {
@@ -238,49 +209,55 @@
                 });
 
                 const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Failed");
 
-                if (!response.ok) {
-                    throw new Error(data.detail || "Agent failed to start");
-                }
-
-                document.getElementById("status").textContent =
-                    "⏳ Agent running... checking every 5 seconds";
-
+                document.getElementById("status").textContent = "⏳ Agent running...";
                 pollStatus(data.task_id);
 
             } catch (err) {
-                document.getElementById("status").textContent = "❌ Error: " + err.message;
-                document.getElementById("submitBtn").disabled = false;
+                document.getElementById("status").textContent  = "❌ Error: " + err.message;
+                document.getElementById("submitBtn").disabled  = false;
             }
         }
 
-        // ── Poll Status ──────────────────────────────────
         function pollStatus(taskId) {
             const interval = setInterval(async () => {
                 try {
                     const response = await fetch("/agent/status/" + taskId, {
                         headers: { "Authorization": "Bearer " + token }
                     });
-
                     const data = await response.json();
 
                     if (data.status === "done") {
                         clearInterval(interval);
                         document.getElementById("submitBtn").disabled = false;
-                        const prUrl = data.result?.pr_url;
+
+                        const result = data.result;
+
+                        // ── FIX: Check inner status ──────────────
+                        if (result && result.status === "failed") {
+                            document.getElementById("status").textContent =
+                                "❌ Agent failed: " + (result.error_message || "Unknown error");
+                            showLogs(result.logs || []);
+                            return;
+                        }
+
+                        const prUrl = result?.pr_url;
                         if (prUrl) {
                             document.getElementById("status").innerHTML =
-                                "✅ Done! PR created: <a id='prLink' href='" +
-                                prUrl + "' target='_blank'>" + prUrl + "</a>";
+                                "✅ Done! PR: <a href='" + prUrl + "' target='_blank'>" + prUrl + "</a>";
                         } else {
                             document.getElementById("status").textContent =
-                                "✅ Done! No PR created.";
+                                "⚠️ Agent completed but no PR was created. Check logs below.";
                         }
+                        showLogs(result?.logs || []);
+
                     } else if (data.status === "failed") {
                         clearInterval(interval);
                         document.getElementById("submitBtn").disabled = false;
                         document.getElementById("status").textContent =
-                            "❌ Failed: " + JSON.stringify(data.error);
+                            "❌ Task failed: " + JSON.stringify(data.error);
+
                     } else {
                         document.getElementById("status").textContent =
                             "⏳ Status: " + data.status + "...";
@@ -289,10 +266,17 @@
                     clearInterval(interval);
                     document.getElementById("submitBtn").disabled = false;
                 }
-            }, 5000);  // poll every 5 seconds instead of 3
+            }, 5000);
         }
 
-        // ── Logout ───────────────────────────────────────
+        function showLogs(logs) {
+            if (!logs.length) return;
+            const logsDiv = document.getElementById("logs");
+            logsDiv.style.display = "block";
+            logsDiv.innerHTML     = "<strong>Agent Steps:</strong><br>" +
+                logs.map(l => "• " + l).join("<br>");
+        }
+
         function logout() {
             localStorage.removeItem("jwt_token");
             token = "";
@@ -300,7 +284,6 @@
             document.getElementById("appSection").style.display   = "none";
         }
 
-        // Start
         init();
     </script>
 </body>
