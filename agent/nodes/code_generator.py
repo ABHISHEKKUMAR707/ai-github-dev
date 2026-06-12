@@ -1,11 +1,13 @@
 ﻿import re
 from agent.state import AgentState, AgentStatus, FileChange
+from agent.streaming.event_bus import publish_event
+from agent.streaming.events import StreamEvent, EventType
 from config.claude_client import call_claude
 import structlog
 
 logger = structlog.get_logger()
 
-CODE_GEN_SYSTEM_PROMPT = '''
+CODE_GEN_SYSTEM_PROMPT = """
 You are a senior software engineer writing production-quality code.
 
 When given a repository context and implementation plan, you must:
@@ -20,98 +22,101 @@ For each file you create or modify, output:
 
 FILE: path/to/file.py
 ACTION: create
-`python
+```python
 # full file content here
-`
+```
 
 FILE: path/to/existing.py
 ACTION: modify
-`python
+```python
 # full updated file content here
-`
+```
 
 Only output file blocks. No explanations outside the blocks.
-'''
+"""
 
 
 def parse_file_changes(response: str) -> list:
-    '''
-    Parses Claude response into list of FileChange objects.
-    Looks for FILE: and ACTION: markers.
-    '''
     changes = []
-
-    # Split by FILE: marker
-    parts = response.split('FILE:')
-
-    for part in parts[1:]:  # skip first empty split
+    parts   = response.split("FILE:")
+    for part in parts[1:]:
         try:
-            lines      = part.strip().split('\n')
+            lines      = part.strip().split("\n")
             file_path  = lines[0].strip()
-
-            # Get action
-            action_line = lines[1].strip() if len(lines) > 1 else ''
-            action      = 'create'
-            if 'ACTION:' in action_line:
-                action = action_line.replace('ACTION:', '').strip().lower()
-
-            # Extract code block
-            code_match = re.search(r'`(?:python|javascript|typescript|)?\n(.*?)`', part, re.DOTALL)
+            action_line = lines[1].strip() if len(lines) > 1 else ""
+            action      = "create"
+            if "ACTION:" in action_line:
+                action = action_line.replace("ACTION:", "").strip().lower()
+            code_match = re.search(
+                r"```(?:python|javascript|typescript|)?\n(.*?)```",
+                part, re.DOTALL
+            )
             if code_match:
                 content = code_match.group(1).strip()
                 changes.append(FileChange(
                     file_path=file_path,
-                    original_content='',
+                    original_content="",
                     new_content=content,
                     change_type=action
                 ))
         except Exception:
             continue
-
     return changes
 
 
 def run(state: AgentState) -> AgentState:
-    '''
-    Code Generator node — asks Claude to write the code.
-    Reads:  state.assembled_context
-    Writes: state.file_changes, state.status
-    '''
-    logger.info('code_generator_started', session_id=state['session_id'])
+    logger.info("code_generator_started", session_id=state["session_id"])
+
+    publish_event(StreamEvent(
+        event_type=EventType.CODEGEN_STARTED,
+        session_id=state["session_id"],
+        message="Generating code with Claude AI...",
+        data={"retry": state["retry_count"]}
+    ))
 
     try:
-        prompt = f'''
+        prompt = f"""
 Here is the repository context and what needs to be implemented:
 
 {state["assembled_context"]}
 
 Now implement all the steps in the plan.
 Generate complete, production-ready code for each file.
-'''
-        response = call_claude(
-            prompt=prompt,
-            system=CODE_GEN_SYSTEM_PROMPT,
-            max_tokens=8000
-        )
-
+"""
+        response     = call_claude(prompt=prompt, system=CODE_GEN_SYSTEM_PROMPT, max_tokens=8000)
         file_changes = parse_file_changes(response)
 
         if not file_changes:
-            raise ValueError('Claude returned no file changes')
+            raise ValueError("Claude returned no file changes")
 
-        logger.info('code_generated', files=len(file_changes))
+        publish_event(StreamEvent(
+            event_type=EventType.CODEGEN_COMPLETED,
+            session_id=state["session_id"],
+            message=f"Generated {len(file_changes)} file changes",
+            data={"files": [c["file_path"] for c in file_changes]}
+        ))
+
+        logger.info("code_generated", files=len(file_changes))
 
         return {
             **state,
-            'file_changes': file_changes,
-            'status':       AgentStatus.VALIDATING,
-            'logs':         state['logs'] + [f'Generated {len(file_changes)} file changes']
+            "file_changes": file_changes,
+            "status":       AgentStatus.VALIDATING,
+            "logs":         state["logs"] + [f"Generated {len(file_changes)} file changes"]
         }
 
     except Exception as e:
-        logger.error('code_generator_failed', error=str(e))
+        logger.error("code_generator_failed", error=str(e))
+
+        publish_event(StreamEvent(
+            event_type=EventType.AGENT_FAILED,
+            session_id=state["session_id"],
+            message=f"Code generation failed: {str(e)}",
+            data={"error": str(e)}
+        ))
+
         return {
             **state,
-            'status':        AgentStatus.FAILED,
-            'error_message': f'Code generation failed: {str(e)}'
+            "status":        AgentStatus.FAILED,
+            "error_message": f"Code generation failed: {str(e)}"
         }
