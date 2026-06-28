@@ -2,6 +2,8 @@
 from agent.state import AgentState, AgentStatus, FileChange
 from agent.streaming.event_bus import publish_event
 from agent.streaming.events import StreamEvent, EventType
+from agent.approval.manager import request_approval, is_approved, is_rejected, is_modified
+from agent.approval.models import ApprovalGate
 from config.claude_client import call_claude
 import structlog
 
@@ -37,8 +39,10 @@ Only output file blocks. No explanations outside the blocks.
 
 
 def parse_file_changes(response: str) -> list:
+    """Parses Claude response into list of FileChange objects."""
     changes = []
     parts   = response.split("FILE:")
+
     for part in parts[1:]:
         try:
             lines      = part.strip().split("\n")
@@ -47,6 +51,7 @@ def parse_file_changes(response: str) -> list:
             action      = "create"
             if "ACTION:" in action_line:
                 action = action_line.replace("ACTION:", "").strip().lower()
+
             code_match = re.search(
                 r"```(?:python|javascript|typescript|)?\n(.*?)```",
                 part, re.DOTALL
@@ -64,7 +69,39 @@ def parse_file_changes(response: str) -> list:
     return changes
 
 
+def generate_code(state: AgentState, feedback: str = "") -> list:
+    """Calls Claude to generate code."""
+    feedback_section = f"\nUser feedback to incorporate: {feedback}" if feedback else ""
+
+    prompt = f"""
+Here is the repository context and what needs to be implemented:
+
+{state["assembled_context"]}
+{feedback_section}
+
+Now implement all the steps in the plan.
+Generate complete, production-ready code for each file.
+"""
+    response     = call_claude(prompt=prompt, system=CODE_GEN_SYSTEM_PROMPT, max_tokens=8000)
+    file_changes = parse_file_changes(response)
+
+    if not file_changes:
+        raise ValueError("Claude returned no file changes")
+
+    return file_changes
+
+
 def run(state: AgentState) -> AgentState:
+    """
+    Code Generator node with Gate 2 approval.
+
+    Flow:
+    1. Claude generates code
+    2. Show generated files to user → wait for approval
+    3. If approved  → continue to validator
+    4. If rejected  → stop
+    5. If modified  → regenerate with feedback
+    """
     logger.info("code_generator_started", session_id=state["session_id"])
 
     publish_event(StreamEvent(
@@ -74,49 +111,85 @@ def run(state: AgentState) -> AgentState:
         data={"retry": state["retry_count"]}
     ))
 
-    try:
-        prompt = f"""
-Here is the repository context and what needs to be implemented:
+    feedback    = ""
+    max_retries = 3
 
-{state["assembled_context"]}
+    for attempt in range(max_retries):
+        try:
+            # Step 1: Generate code
+            file_changes = generate_code(state, feedback)
 
-Now implement all the steps in the plan.
-Generate complete, production-ready code for each file.
-"""
-        response     = call_claude(prompt=prompt, system=CODE_GEN_SYSTEM_PROMPT, max_tokens=8000)
-        file_changes = parse_file_changes(response)
+            publish_event(StreamEvent(
+                event_type=EventType.CODEGEN_COMPLETED,
+                session_id=state["session_id"],
+                message=f"Generated {len(file_changes)} file changes",
+                data={"files": [c["file_path"] for c in file_changes]}
+            ))
 
-        if not file_changes:
-            raise ValueError("Claude returned no file changes")
+            # Build file summary for approval UI
+            file_summary = []
+            for change in file_changes:
+                line_count = len(change["new_content"].splitlines())
+                file_summary.append({
+                    "file":       change["file_path"],
+                    "action":     change["change_type"],
+                    "lines":      line_count,
+                    "preview":    change["new_content"][:200] + "..."
+                                  if len(change["new_content"]) > 200
+                                  else change["new_content"]
+                })
 
-        publish_event(StreamEvent(
-            event_type=EventType.CODEGEN_COMPLETED,
-            session_id=state["session_id"],
-            message=f"Generated {len(file_changes)} file changes",
-            data={"files": [c["file_path"] for c in file_changes]}
-        ))
+            # Step 2: Request code approval
+            response = request_approval(
+                session_id=state["session_id"],
+                gate=ApprovalGate.CODE,
+                title="Review Generated Code",
+                summary=f"Claude generated {len(file_changes)} files. Review before committing.",
+                details={
+                    "files":   file_summary,
+                    "total":   len(file_changes)
+                }
+            )
 
-        logger.info("code_generated", files=len(file_changes))
+            # Step 3: Handle decision
+            if is_approved(response):
+                logger.info("code_approved", files=len(file_changes))
+                return {
+                    **state,
+                    "file_changes": file_changes,
+                    "status":       AgentStatus.VALIDATING,
+                    "logs":         state["logs"] + [f"Code approved: {len(file_changes)} files"]
+                }
 
-        return {
-            **state,
-            "file_changes": file_changes,
-            "status":       AgentStatus.VALIDATING,
-            "logs":         state["logs"] + [f"Generated {len(file_changes)} file changes"]
-        }
+            elif is_modified(response):
+                feedback = response.feedback
+                logger.info("code_modification_requested", feedback=feedback)
+                publish_event(StreamEvent(
+                    event_type=EventType.CODEGEN_STARTED,
+                    session_id=state["session_id"],
+                    message=f"Regenerating with feedback: {feedback}",
+                    data={"feedback": feedback}
+                ))
+                continue
 
-    except Exception as e:
-        logger.error("code_generator_failed", error=str(e))
+            else:
+                logger.info("code_rejected", session_id=state["session_id"])
+                return {
+                    **state,
+                    "status":        AgentStatus.FAILED,
+                    "error_message": f"Code rejected by user: {response.feedback}"
+                }
 
-        publish_event(StreamEvent(
-            event_type=EventType.AGENT_FAILED,
-            session_id=state["session_id"],
-            message=f"Code generation failed: {str(e)}",
-            data={"error": str(e)}
-        ))
+        except Exception as e:
+            logger.error("code_generator_failed", error=str(e))
+            return {
+                **state,
+                "status":        AgentStatus.FAILED,
+                "error_message": f"Code generation failed: {str(e)}"
+            }
 
-        return {
-            **state,
-            "status":        AgentStatus.FAILED,
-            "error_message": f"Code generation failed: {str(e)}"
-        }
+    return {
+        **state,
+        "status":        AgentStatus.FAILED,
+        "error_message": "Code could not be approved after 3 attempts"
+    }
