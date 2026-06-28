@@ -2,6 +2,8 @@
 from worker.celery_app import celery_app
 from agent.graph import agent_graph
 from agent.state import AgentState, AgentStatus
+from agent.streaming.event_bus import publish_event
+from agent.streaming.events import StreamEvent, EventType
 from config.settings import settings
 from db.session import SessionLocal
 from db.models import Session, AgentState as AgentStateModel
@@ -23,22 +25,23 @@ def run_agent_task(
     user_intent:  str,
     github_token: str
 ):
-    '''
-    Main background task — runs full LangGraph agent.
-    Called by API, runs in background via Redis/Celery.
-    '''
     db = SessionLocal()
 
     try:
-        logger.info('agent_task_started', session_id=session_id)
+        logger.info("agent_task_started", session_id=session_id)
 
-        # Update task progress
+        publish_event(StreamEvent(
+            event_type=EventType.AGENT_STARTED,
+            session_id=session_id,
+            message="Agent started. Initializing...",
+            data={"repo_url": repo_url, "intent": user_intent}
+        ))
+
         self.update_state(
-            state='PROGRESS',
-            meta={'status': 'starting', 'session_id': session_id}
+            state="PROGRESS",
+            meta={"status": "starting", "session_id": session_id}
         )
 
-        # Build initial agent state
         initial_state = AgentState(
             session_id=session_id,
             user_id=user_id,
@@ -50,7 +53,7 @@ def run_agent_task(
             current_step=0,
             retrieved_chunks=[],
             repo_structure={},
-            assembled_context='',
+            assembled_context="",
             file_changes=[],
             validation_result=None,
             retry_count=0,
@@ -62,50 +65,52 @@ def run_agent_task(
             logs=[]
         )
 
-        # Run the LangGraph agent
         final_state = agent_graph.invoke(initial_state)
 
-        # Save final state to MySQL
         db_session = db.query(Session).filter(
             Session.session_id == session_id
         ).first()
 
         if db_session:
-            db_session.status        = final_state['status']
-            db_session.pr_url        = final_state.get('pr_url')
-            db_session.error_message = final_state.get('error_message')
+            db_session.status        = final_state["status"]
+            db_session.pr_url        = final_state.get("pr_url")
+            db_session.error_message = final_state.get("error_message")
             db.commit()
 
-        # Save agent state snapshot
         state_record = AgentStateModel(
             session_id=session_id,
             state_data=dict(final_state),
-            current_node='done',
-            retry_count=final_state['retry_count']
+            current_node="done",
+            retry_count=final_state["retry_count"]
         )
         db.add(state_record)
         db.commit()
 
         logger.info(
-            'agent_task_completed',
+            "agent_task_completed",
             session_id=session_id,
-            status=final_state['status'],
-            pr_url=final_state.get('pr_url')
+            status=final_state["status"],
+            pr_url=final_state.get("pr_url")
         )
 
         return {
-            'session_id': session_id,
-            'status':     final_state['status'],
-            'pr_url':     final_state.get('pr_url'),
-            'logs':       final_state.get('logs', [])
+            "session_id": session_id,
+            "status":     final_state["status"],
+            "pr_url":     final_state.get("pr_url"),
+            "logs":       final_state.get("logs", [])
         }
 
     except Exception as exc:
-        logger.error('agent_task_failed', session_id=session_id, error=str(exc))
-        raise self.retry(
-            exc=exc,
-            countdown=2 ** self.request.retries
-        )
+        logger.error("agent_task_failed", session_id=session_id, error=str(exc))
+
+        publish_event(StreamEvent(
+            event_type=EventType.AGENT_FAILED,
+            session_id=session_id,
+            message=f"Agent task failed: {str(exc)}",
+            data={"error": str(exc)}
+        ))
+
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
     finally:
         db.close()

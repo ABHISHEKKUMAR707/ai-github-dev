@@ -1,4 +1,4 @@
-﻿version: '3.9'
+﻿version: "3.9"
 
 services:
 
@@ -6,17 +6,18 @@ services:
     image: mysql:8.0
     container_name: ai_github_mysql
     restart: always
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE:      ai_github_dev
       MYSQL_USER:          appuser
       MYSQL_PASSWORD:      apppassword
     ports:
-      - '3306:3306'
+      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,11 +27,11 @@ services:
     container_name: ai_github_redis
     restart: always
     ports:
-      - '6379:6379'
+      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

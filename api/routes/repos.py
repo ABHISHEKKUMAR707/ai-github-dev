@@ -9,10 +9,6 @@ router = APIRouter(prefix="/repos", tags=["repos"])
 
 @router.get("/list")
 async def list_repos(user: User = Depends(get_current_user)):
-    """
-    Fetches all GitHub repos for the logged in user.
-    Frontend uses this to show repo selector.
-    """
     try:
         github_token  = decrypt_token(user.encrypted_github_token)
         github_client = Github(github_token)
@@ -25,7 +21,7 @@ async def list_repos(user: User = Depends(get_current_user)):
                 "name":           repo.name,
                 "full_name":      repo.full_name,
                 "url":            repo.html_url,
-                "clone_url":      repo.clone_url,
+                "clone_url":      repo.html_url,   # FIX: use html_url not clone_url
                 "private":        repo.private,
                 "default_branch": repo.default_branch,
                 "description":    repo.description or ""

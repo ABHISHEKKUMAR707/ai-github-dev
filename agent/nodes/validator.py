@@ -1,64 +1,50 @@
 ﻿import ast
 from agent.state import AgentState, AgentStatus, ValidationResult
+from agent.streaming.event_bus import publish_event
+from agent.streaming.events import StreamEvent, EventType
 import structlog
 
 logger = structlog.get_logger()
 
 
 def validate_python_syntax(code: str, file_path: str) -> list:
-    '''
-    Uses Python AST parser to check for syntax errors.
-    Returns list of error strings, empty if no errors.
-    '''
     errors = []
     try:
         ast.parse(code)
     except SyntaxError as e:
-        errors.append(f'{file_path}: SyntaxError at line {e.lineno}: {e.msg}')
+        errors.append(f"{file_path}: SyntaxError at line {e.lineno}: {e.msg}")
     except Exception as e:
-        errors.append(f'{file_path}: Parse error: {str(e)}')
-    return errors
-
-
-def validate_file(file_path: str, content: str) -> list:
-    '''
-    Validates a single file based on its extension.
-    Currently supports Python — easy to extend later.
-    '''
-    errors = []
-
-    if file_path.endswith('.py'):
-        errors.extend(validate_python_syntax(content, file_path))
-
-    # Basic checks for all files
-    if not content.strip():
-        errors.append(f'{file_path}: File is empty')
-
+        errors.append(f"{file_path}: Parse error: {str(e)}")
     return errors
 
 
 def run(state: AgentState) -> AgentState:
-    '''
-    Validator node — checks all generated code for errors.
-    Reads:  state.file_changes
-    Writes: state.validation_result, state.status
-    '''
-    logger.info('validator_started', session_id=state['session_id'])
+    logger.info("validator_started", session_id=state["session_id"])
+
+    publish_event(StreamEvent(
+        event_type=EventType.VALIDATOR_STARTED,
+        session_id=state["session_id"],
+        message="Validating generated code...",
+        data={"files": len(state["file_changes"])}
+    ))
 
     try:
         all_errors   = []
         all_warnings = []
 
-        for change in state['file_changes']:
-            file_path = change['file_path']
-            content   = change['new_content']
+        for change in state["file_changes"]:
+            file_path = change["file_path"]
+            content   = change["new_content"]
 
-            errors = validate_file(file_path, content)
-            all_errors.extend(errors)
+            if not content.strip():
+                all_errors.append(f"{file_path}: File is empty")
+                continue
 
-            # Warnings — non blocking
-            if 'import' not in content and file_path.endswith('.py'):
-                all_warnings.append(f'{file_path}: No imports found')
+            if file_path.endswith(".py"):
+                all_errors.extend(validate_python_syntax(content, file_path))
+
+            if "import" not in content and file_path.endswith(".py"):
+                all_warnings.append(f"{file_path}: No imports found")
 
         passed = len(all_errors) == 0
 
@@ -68,24 +54,30 @@ def run(state: AgentState) -> AgentState:
             warnings=all_warnings
         )
 
-        if passed:
-            logger.info('validation_passed', files=len(state['file_changes']))
-        else:
-            logger.warning('validation_failed', errors=all_errors)
+        publish_event(StreamEvent(
+            event_type=EventType.VALIDATOR_COMPLETED,
+            session_id=state["session_id"],
+            message=f"Validation {'passed' if passed else 'failed'}: {len(all_errors)} errors",
+            data={
+                "passed":   passed,
+                "errors":   all_errors,
+                "warnings": all_warnings
+            }
+        ))
+
+        logger.info("validation_done", passed=passed, errors=len(all_errors))
 
         return {
             **state,
-            'validation_result': validation_result,
-            'status':            AgentStatus.COMMITTING if passed else AgentStatus.GENERATING,
-            'logs':              state['logs'] + [
-                f'Validation {"passed" if passed else "failed"}: {len(all_errors)} errors'
-            ]
+            "validation_result": validation_result,
+            "status":            AgentStatus.COMMITTING if passed else AgentStatus.GENERATING,
+            "logs":              state["logs"] + [f"Validation {'passed' if passed else 'failed'}: {len(all_errors)} errors"]
         }
 
     except Exception as e:
-        logger.error('validator_error', error=str(e))
+        logger.error("validator_error", error=str(e))
         return {
             **state,
-            'status':        AgentStatus.FAILED,
-            'error_message': f'Validator failed: {str(e)}'
+            "status":        AgentStatus.FAILED,
+            "error_message": f"Validator failed: {str(e)}"
         }

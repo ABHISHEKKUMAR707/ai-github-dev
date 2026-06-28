@@ -26,7 +26,6 @@
             border-radius: 6px;
             font-size: 15px;
         }
-        select option { background: #161b22; }
         textarea { resize: vertical; }
         .btn-row { display: flex; gap: 10px; margin-bottom: 16px; }
         button {
@@ -49,21 +48,48 @@
             min-height: 48px;
             line-height: 1.6;
         }
-        #prLink { color: #58a6ff; }
+        #streamLog {
+            margin-top: 10px;
+            padding: 12px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+        .log-line {
+            padding: 3px 0;
+            border-bottom: 1px solid #21262d;
+            color: #8b949e;
+        }
+        .log-line.success { color: #3fb950; }
+        .log-line.error   { color: #f85149; }
+        .log-line.info    { color: #58a6ff; }
         #loginSection { text-align: center; padding: 40px 0; }
         #appSection { display: none; }
-        .repo-info {
-            font-size: 12px;
-            color: #8b949e;
-            margin-top: -12px;
-            margin-bottom: 16px;
+        .repo-info { font-size: 12px; color: #8b949e; margin-top: -12px; margin-bottom: 16px; }
+        a { color: #58a6ff; }
+        .progress-bar {
+            height: 4px;
+            background: #21262d;
+            border-radius: 2px;
+            margin-top: 10px;
+            display: none;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #1f6feb;
+            border-radius: 2px;
+            transition: width 0.3s ease;
         }
     </style>
 </head>
 <body>
-    <h1>🤖 AI GitHub Dev</h1>
+    <h1>AI GitHub Dev</h1>
 
-    <!-- Login Section -->
     <div id="loginSection">
         <p style="color:#8b949e; margin-bottom:20px;">
             Login with GitHub to start modifying your repos with AI
@@ -73,7 +99,6 @@
         </button>
     </div>
 
-    <!-- App Section -->
     <div id="appSection">
         <p id="welcomeMsg" style="color:#8b949e; margin-bottom:20px;"></p>
 
@@ -85,33 +110,60 @@
 
         <label>What do you want to build?</label>
         <textarea id="intentText" rows="3"
-            placeholder="e.g. Add an attendance tracker feature with mark and get functions">
+            placeholder="e.g. Add an attendance tracker feature">
         </textarea>
 
         <div class="btn-row">
-            <button id="micBtn" onclick="toggleVoice()">🎤 Hold to Speak</button>
-            <button id="submitBtn" onclick="runAgent()">🚀 Run Agent</button>
+            <button id="micBtn" onclick="toggleVoice()">Speak</button>
+            <button id="submitBtn" onclick="runAgent()">Run Agent</button>
         </div>
 
         <div id="status">Status: Ready</div>
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill" style="width:0%"></div>
+        </div>
+        <div id="streamLog"></div>
     </div>
 
     <script>
-        let token       = localStorage.getItem("jwt_token") || "";
-        let recognition = null;
-        let isRecording = false;
+        let token        = localStorage.getItem("jwt_token") || "";
+        let recognition  = null;
+        let isRecording  = false;
         let selectedRepo = null;
+        let eventSource  = null;
+        let progress     = 0;
 
-        // ── Init ─────────────────────────────────────────
+        // Progress mapping per event type
+        const PROGRESS = {
+            "agent_started":       5,
+            "planner_started":     10,
+            "planner_completed":   20,
+            "retrieval_started":   25,
+            "retrieval_cloning":   30,
+            "retrieval_indexing":  40,
+            "retrieval_searching": 50,
+            "retrieval_completed": 55,
+            "context_started":     60,
+            "context_completed":   65,
+            "codegen_started":     70,
+            "codegen_completed":   82,
+            "validator_started":   85,
+            "validator_completed": 88,
+            "decision_commit":     90,
+            "commit_started":      92,
+            "commit_writing":      94,
+            "commit_pushing":      97,
+            "pr_created":          99,
+            "agent_completed":     100
+        };
+
         async function init() {
-            // Save token from URL if present
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get("token")) {
                 token = urlParams.get("token");
                 localStorage.setItem("jwt_token", token);
                 window.history.replaceState({}, "", "/");
             }
-
             if (token) {
                 document.getElementById("loginSection").style.display = "none";
                 document.getElementById("appSection").style.display   = "block";
@@ -119,110 +171,78 @@
             }
         }
 
-        // ── Load Repos ───────────────────────────────────
         async function loadRepos() {
             try {
-                document.getElementById("status").textContent = "Loading your repositories...";
-
+                document.getElementById("status").textContent = "Loading repositories...";
                 const response = await fetch("/repos/list", {
                     headers: { "Authorization": "Bearer " + token }
                 });
-
-                if (response.status === 401) {
-                    logout();
-                    return;
-                }
-
+                if (response.status === 401) { logout(); return; }
                 const data = await response.json();
-
                 document.getElementById("welcomeMsg").textContent =
                     "Welcome " + data.username + " — " + data.count + " repos found";
-
                 const select = document.getElementById("repoSelect");
                 select.innerHTML = '<option value="">-- Select a repository --</option>';
-
                 data.repos.forEach(repo => {
-                    const option    = document.createElement("option");
-                    option.value    = JSON.stringify(repo);
-                    option.textContent = repo.full_name + (repo.private ? " 🔒" : "");
+                    const option       = document.createElement("option");
+                    option.value       = JSON.stringify(repo);
+                    option.textContent = repo.full_name + (repo.private ? " (private)" : "");
                     select.appendChild(option);
                 });
-
-                document.getElementById("status").textContent = "Status: Ready — select a repo above";
-
+                document.getElementById("status").textContent = "Status: Ready";
             } catch (err) {
-                document.getElementById("status").textContent = "Error loading repos: " + err.message;
+                document.getElementById("status").textContent = "Error: " + err.message;
             }
         }
 
-        // ── On Repo Selected ─────────────────────────────
         function onRepoSelected() {
             const select = document.getElementById("repoSelect");
             if (!select.value) return;
-
             selectedRepo = JSON.parse(select.value);
             document.getElementById("repoInfo").textContent =
                 "Branch: " + selectedRepo.default_branch +
                 (selectedRepo.description ? " | " + selectedRepo.description : "");
-
-            document.getElementById("status").textContent =
-                "Status: Ready — repo selected: " + selectedRepo.full_name;
         }
 
-        // ── Voice Input ──────────────────────────────────
         function toggleVoice() {
             if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
                 alert("Use Chrome or Edge for voice input.");
                 return;
             }
-
-            if (isRecording) {
-                recognition.stop();
-                return;
-            }
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition             = new SpeechRecognition();
-            recognition.lang        = "en-US";
-            recognition.continuous  = false;
-
+            if (isRecording) { recognition.stop(); return; }
+            const SR    = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SR();
+            recognition.lang       = "en-US";
+            recognition.continuous = false;
             recognition.onstart = () => {
                 isRecording = true;
-                document.getElementById("micBtn").textContent = "🔴 Recording...";
+                document.getElementById("micBtn").textContent = "Recording...";
                 document.getElementById("micBtn").classList.add("recording");
-                document.getElementById("status").textContent = "Status: Listening...";
             };
-
-            recognition.onresult = (event) => {
-                const text = event.results[0][0].transcript;
-                document.getElementById("intentText").value = text;
-                document.getElementById("status").textContent = "Status: Got: " + text;
+            recognition.onresult = (e) => {
+                document.getElementById("intentText").value = e.results[0][0].transcript;
+                document.getElementById("status").textContent = "Got voice input!";
             };
-
             recognition.onend = () => {
                 isRecording = false;
-                document.getElementById("micBtn").textContent = "🎤 Hold to Speak";
+                document.getElementById("micBtn").textContent = "Speak";
                 document.getElementById("micBtn").classList.remove("recording");
             };
-
             recognition.start();
         }
 
-        // ── Run Agent ────────────────────────────────────
         async function runAgent() {
-            if (!selectedRepo) {
-                alert("Please select a repository first.");
-                return;
-            }
-
+            if (!selectedRepo) { alert("Please select a repository."); return; }
             const userIntent = document.getElementById("intentText").value.trim();
-            if (!userIntent) {
-                alert("Please describe what you want to build.");
-                return;
-            }
+            if (!userIntent) { alert("Please describe what you want to build."); return; }
 
-            document.getElementById("status").textContent = "Status: Starting agent...";
-            document.getElementById("submitBtn").disabled = true;
+            // Reset UI
+            document.getElementById("status").textContent     = "Starting agent...";
+            document.getElementById("streamLog").innerHTML    = "";
+            document.getElementById("streamLog").style.display = "block";
+            document.getElementById("progressBar").style.display = "block";
+            document.getElementById("submitBtn").disabled     = true;
+            setProgress(0);
 
             try {
                 const response = await fetch("/agent/run", {
@@ -238,61 +258,128 @@
                 });
 
                 const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Failed");
 
-                if (!response.ok) {
-                    throw new Error(data.detail || "Agent failed to start");
-                }
-
-                document.getElementById("status").textContent =
-                    "⏳ Agent running... checking every 5 seconds";
-
-                pollStatus(data.task_id);
+                // Connect to SSE stream
+                connectStream(data.session_id);
 
             } catch (err) {
-                document.getElementById("status").textContent = "❌ Error: " + err.message;
+                document.getElementById("status").textContent = "Error: " + err.message;
                 document.getElementById("submitBtn").disabled = false;
             }
         }
 
-        // ── Poll Status ──────────────────────────────────
-        function pollStatus(taskId) {
-            const interval = setInterval(async () => {
-                try {
-                    const response = await fetch("/agent/status/" + taskId, {
-                        headers: { "Authorization": "Bearer " + token }
-                    });
+        function connectStream(sessionId) {
+            // Close existing connection
+            if (eventSource) eventSource.close();
 
-                    const data = await response.json();
+            const url = `/agent/stream/${sessionId}?token=${token}`;
+            eventSource = new EventSource(url);
 
-                    if (data.status === "done") {
-                        clearInterval(interval);
-                        document.getElementById("submitBtn").disabled = false;
-                        const prUrl = data.result?.pr_url;
-                        if (prUrl) {
-                            document.getElementById("status").innerHTML =
-                                "✅ Done! PR created: <a id='prLink' href='" +
-                                prUrl + "' target='_blank'>" + prUrl + "</a>";
-                        } else {
-                            document.getElementById("status").textContent =
-                                "✅ Done! No PR created.";
-                        }
-                    } else if (data.status === "failed") {
-                        clearInterval(interval);
-                        document.getElementById("submitBtn").disabled = false;
-                        document.getElementById("status").textContent =
-                            "❌ Failed: " + JSON.stringify(data.error);
-                    } else {
-                        document.getElementById("status").textContent =
-                            "⏳ Status: " + data.status + "...";
-                    }
-                } catch (err) {
-                    clearInterval(interval);
-                    document.getElementById("submitBtn").disabled = false;
-                }
-            }, 5000);  // poll every 5 seconds instead of 3
+            eventSource.onmessage = (e) => {
+                const event = JSON.parse(e.data);
+                handleEvent(event);
+            };
+
+            eventSource.onerror = (e) => {
+                eventSource.close();
+                document.getElementById("submitBtn").disabled = false;
+            };
         }
 
-        // ── Logout ───────────────────────────────────────
+        function handleEvent(event) {
+            const type    = event.event_type;
+            const message = event.message;
+            const data    = event.data || {};
+
+            // Update progress bar
+            if (PROGRESS[type] !== undefined) {
+                setProgress(PROGRESS[type]);
+            }
+
+            // Update status
+            document.getElementById("status").textContent = message;
+
+            // Add to stream log
+            addLog(type, message, data);
+
+            // Handle completion
+            if (type === "agent_completed") {
+                eventSource.close();
+                document.getElementById("submitBtn").disabled = false;
+                setProgress(100);
+                if (data.pr_url) {
+                    document.getElementById("status").innerHTML =
+                        "Done! PR: <a href='" + data.pr_url + "' target='_blank'>" + data.pr_url + "</a>";
+                }
+            }
+
+            if (type === "agent_failed") {
+                eventSource.close();
+                document.getElementById("submitBtn").disabled = false;
+                document.getElementById("status").textContent = "Failed: " + message;
+            }
+
+            // Show plan when planner completes
+            if (type === "planner_completed" && data.steps) {
+                addLog("info", "Plan: " + data.steps.join(" → "), {});
+            }
+
+            // Show files when codegen completes
+            if (type === "codegen_completed" && data.files) {
+                addLog("info", "Files: " + data.files.join(", "), {});
+            }
+        }
+
+        function addLog(type, message, data) {
+            const log  = document.getElementById("streamLog");
+            const line = document.createElement("div");
+            line.className = "log-line";
+
+            const icons = {
+                "agent_started":      ">>",
+                "planner_started":    "  Planner:",
+                "planner_completed":  "  Planner:",
+                "retrieval_started":  "  Retrieval:",
+                "retrieval_cloning":  "  Retrieval:",
+                "retrieval_indexing": "  Retrieval:",
+                "retrieval_searching":"  Retrieval:",
+                "retrieval_completed":"  Retrieval:",
+                "context_started":    "  Context:",
+                "context_completed":  "  Context:",
+                "codegen_started":    "  CodeGen:",
+                "codegen_completed":  "  CodeGen:",
+                "validator_started":  "  Validator:",
+                "validator_completed":"  Validator:",
+                "decision_commit":    "  Decision:",
+                "commit_started":     "  Commit:",
+                "commit_writing":     "  Commit:",
+                "commit_pushing":     "  Commit:",
+                "pr_created":         "  PR:",
+                "agent_completed":    ">> Done:",
+                "agent_failed":       ">> Error:",
+                "info":               "  Info:"
+            };
+
+            const icon = icons[type] || "  ";
+
+            if (type === "agent_completed" || type === "pr_created") {
+                line.classList.add("success");
+            } else if (type === "agent_failed") {
+                line.classList.add("error");
+            } else if (type === "info") {
+                line.classList.add("info");
+            }
+
+            line.textContent = icon + " " + message;
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function setProgress(pct) {
+            document.getElementById("progressFill").style.width = pct + "%";
+        }
+
         function logout() {
             localStorage.removeItem("jwt_token");
             token = "";
@@ -300,7 +387,6 @@
             document.getElementById("appSection").style.display   = "none";
         }
 
-        // Start
         init();
     </script>
 </body>
