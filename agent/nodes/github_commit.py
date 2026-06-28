@@ -4,6 +4,8 @@ from github import Github
 from agent.state import AgentState, AgentStatus
 from agent.streaming.event_bus import publish_event
 from agent.streaming.events import StreamEvent, EventType
+from agent.approval.manager import request_approval, is_approved, is_rejected
+from agent.approval.models import ApprovalGate
 import structlog
 
 logger = structlog.get_logger()
@@ -12,22 +14,70 @@ REPOS_DIR = "repos"
 
 
 def run(state: AgentState) -> AgentState:
+    """
+    GitHub Commit node with Gate 3 approval.
+
+    Flow:
+    1. Prepare branch name and commit message
+    2. Show commit details to user → wait for approval
+    3. If approved  → write files, commit, push, create PR
+    4. If rejected  → stop, nothing pushed to GitHub
+    """
     logger.info("github_commit_started", session_id=state["session_id"])
 
     publish_event(StreamEvent(
         event_type=EventType.COMMIT_STARTED,
         session_id=state["session_id"],
-        message="Preparing to commit changes...",
+        message="Preparing commit details for your review...",
         data={"files": len(state["file_changes"])}
     ))
 
     try:
+        # Prepare commit details
         repo_url  = state["repo_url"]
         clean_url = repo_url.rstrip("/")
         if clean_url.endswith(".git"):
             clean_url = clean_url[:-4]
 
-        repo_name          = clean_url.split("/")[-1]
+        repo_name   = clean_url.split("/")[-1]
+        branch_name = f"ai-dev/{state['session_id'][:8]}"
+
+        commit_message = f"AI: {state['cleaned_intent']}\n\nChanges:\n" + \
+            "\n".join(f"- {c['file_path']}" for c in state["file_changes"])
+
+        # Build file list for approval UI
+        file_list = []
+        for change in state["file_changes"]:
+            file_list.append({
+                "file":   change["file_path"],
+                "action": change["change_type"],
+                "lines":  len(change["new_content"].splitlines())
+            })
+
+        # Gate 3: Request commit approval
+        response = request_approval(
+            session_id=state["session_id"],
+            gate=ApprovalGate.COMMIT,
+            title="Review Before Pushing to GitHub",
+            summary=f"Ready to push {len(state['file_changes'])} files to GitHub and create PR",
+            details={
+                "branch":         branch_name,
+                "commit_message": commit_message,
+                "repo":           clean_url,
+                "files":          file_list
+            }
+        )
+
+        # Handle decision
+        if is_rejected(response):
+            logger.info("commit_rejected", session_id=state["session_id"])
+            return {
+                **state,
+                "status":        AgentStatus.FAILED,
+                "error_message": f"Commit rejected by user: {response.feedback}"
+            }
+
+        # Approved — find local repo path
         local_path_with    = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}.git")
         local_path_without = os.path.join(REPOS_DIR, f"{state['session_id']}_{repo_name}")
 
@@ -36,12 +86,12 @@ def run(state: AgentState) -> AgentState:
         elif os.path.exists(local_path_without):
             local_path = local_path_without
         else:
-            raise Exception(f"Repo not found locally: {local_path_with}")
+            raise Exception(f"Repo not found locally")
 
-        local_repo  = git.Repo(local_path)
-        branch_name = f"ai-dev/{state['session_id'][:8]}"
+        local_repo = git.Repo(local_path)
         local_repo.git.checkout("-b", branch_name)
 
+        # Write files
         publish_event(StreamEvent(
             event_type=EventType.COMMIT_WRITING,
             session_id=state["session_id"],
@@ -56,9 +106,8 @@ def run(state: AgentState) -> AgentState:
                 f.write(change["new_content"])
             logger.info("file_written", path=change["file_path"])
 
+        # Commit and push
         local_repo.git.add("--all")
-        commit_message = f"AI: {state['cleaned_intent']}\n\nChanges:\n" + \
-            "\n".join(f"- {c['file_path']}" for c in state["file_changes"])
         local_repo.index.commit(commit_message)
 
         publish_event(StreamEvent(
@@ -71,6 +120,7 @@ def run(state: AgentState) -> AgentState:
         origin = local_repo.remote("origin")
         origin.push(branch_name)
 
+        # Create PR
         github_client = Github(state["github_token"])
         repo_full     = clean_url.replace("https://github.com/", "")
         logger.info("creating_pr", repo=repo_full, branch=branch_name)
@@ -90,7 +140,7 @@ def run(state: AgentState) -> AgentState:
         publish_event(StreamEvent(
             event_type=EventType.PR_CREATED,
             session_id=state["session_id"],
-            message=f"Pull Request created successfully!",
+            message="Pull Request created successfully!",
             data={"pr_url": pr.html_url, "branch": branch_name}
         ))
 
