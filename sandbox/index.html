@@ -16,7 +16,7 @@
         }
         h1 { color: #58a6ff; margin-bottom: 24px; }
         label { color: #8b949e; font-size: 14px; display: block; margin-bottom: 6px; }
-        select, textarea {
+        select, textarea, input[type="text"] {
             width: 100%;
             padding: 10px;
             margin-bottom: 16px;
@@ -56,35 +56,93 @@
             border-radius: 6px;
             font-size: 13px;
             font-family: monospace;
-            max-height: 300px;
+            max-height: 200px;
             overflow-y: auto;
             display: none;
         }
-        .log-line {
-            padding: 3px 0;
-            border-bottom: 1px solid #21262d;
-            color: #8b949e;
-        }
+        .log-line { padding: 3px 0; border-bottom: 1px solid #21262d; color: #8b949e; }
         .log-line.success { color: #3fb950; }
         .log-line.error   { color: #f85149; }
         .log-line.info    { color: #58a6ff; }
+        .log-line.warning { color: #d29922; }
+
+        /* Approval Panel */
+        #approvalPanel {
+            display: none;
+            margin-top: 16px;
+            padding: 16px;
+            background: #161b22;
+            border: 2px solid #d29922;
+            border-radius: 8px;
+        }
+        #approvalPanel h3 {
+            color: #d29922;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        #approvalSummary {
+            color: #8b949e;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+        #approvalDetails {
+            background: #0d1117;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: monospace;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 12px;
+            color: #c9d1d9;
+        }
+        .approval-item {
+            padding: 4px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .approval-item:last-child { border-bottom: none; }
+        .tag-create  { color: #3fb950; }
+        .tag-modify  { color: #d29922; }
+        .tag-delete  { color: #f85149; }
+        .approval-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+        #approveBtn {
+            background: #238636;
+            color: white;
+            flex: 1;
+        }
+        #rejectBtn {
+            background: #da3633;
+            color: white;
+            flex: 1;
+        }
+        #modifyBtn {
+            background: #9e6a03;
+            color: white;
+            flex: 1;
+        }
+        #feedbackSection { display: none; margin-top: 12px; }
+        #feedbackInput {
+            width: 100%;
+            padding: 8px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        #sendFeedbackBtn {
+            background: #1f6feb;
+            color: white;
+            width: 100%;
+        }
+
         #loginSection { text-align: center; padding: 40px 0; }
         #appSection { display: none; }
         .repo-info { font-size: 12px; color: #8b949e; margin-top: -12px; margin-bottom: 16px; }
         a { color: #58a6ff; }
-        .progress-bar {
-            height: 4px;
-            background: #21262d;
-            border-radius: 2px;
-            margin-top: 10px;
-            display: none;
-        }
-        .progress-fill {
-            height: 100%;
-            background: #1f6feb;
-            border-radius: 2px;
-            transition: width 0.3s ease;
-        }
+        .progress-bar { height: 4px; background: #21262d; border-radius: 2px; margin-top: 10px; display: none; }
+        .progress-fill { height: 100%; background: #1f6feb; border-radius: 2px; transition: width 0.3s ease; }
     </style>
 </head>
 <body>
@@ -122,6 +180,23 @@
         <div class="progress-bar" id="progressBar">
             <div class="progress-fill" id="progressFill" style="width:0%"></div>
         </div>
+
+        <!-- Approval Panel -->
+        <div id="approvalPanel">
+            <h3 id="approvalTitle">Waiting for approval...</h3>
+            <p id="approvalSummary"></p>
+            <div id="approvalDetails"></div>
+            <div class="approval-btns">
+                <button id="approveBtn" onclick="submitApproval('approved')">Approve</button>
+                <button id="rejectBtn"  onclick="submitApproval('rejected')">Reject</button>
+                <button id="modifyBtn"  onclick="showFeedback()">Request Changes</button>
+            </div>
+            <div id="feedbackSection">
+                <input type="text" id="feedbackInput" placeholder="Describe what changes you want..." />
+                <button id="sendFeedbackBtn" onclick="submitApproval('modified')">Send Feedback</button>
+            </div>
+        </div>
+
         <div id="streamLog"></div>
     </div>
 
@@ -131,9 +206,9 @@
         let isRecording  = false;
         let selectedRepo = null;
         let eventSource  = null;
-        let progress     = 0;
+        let currentSessionId = null;
+        let currentGate      = null;
 
-        // Progress mapping per event type
         const PROGRESS = {
             "agent_started":       5,
             "planner_started":     10,
@@ -236,12 +311,12 @@
             const userIntent = document.getElementById("intentText").value.trim();
             if (!userIntent) { alert("Please describe what you want to build."); return; }
 
-            // Reset UI
-            document.getElementById("status").textContent     = "Starting agent...";
-            document.getElementById("streamLog").innerHTML    = "";
+            document.getElementById("status").textContent      = "Starting agent...";
+            document.getElementById("streamLog").innerHTML     = "";
             document.getElementById("streamLog").style.display = "block";
             document.getElementById("progressBar").style.display = "block";
-            document.getElementById("submitBtn").disabled     = true;
+            document.getElementById("approvalPanel").style.display = "none";
+            document.getElementById("submitBtn").disabled      = true;
             setProgress(0);
 
             try {
@@ -256,11 +331,10 @@
                         user_intent: userIntent
                     })
                 });
-
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || "Failed");
 
-                // Connect to SSE stream
+                currentSessionId = data.session_id;
                 connectStream(data.session_id);
 
             } catch (err) {
@@ -270,18 +344,14 @@
         }
 
         function connectStream(sessionId) {
-            // Close existing connection
             if (eventSource) eventSource.close();
-
             const url = `/agent/stream/${sessionId}?token=${token}`;
             eventSource = new EventSource(url);
-
             eventSource.onmessage = (e) => {
                 const event = JSON.parse(e.data);
                 handleEvent(event);
             };
-
-            eventSource.onerror = (e) => {
+            eventSource.onerror = () => {
                 eventSource.close();
                 document.getElementById("submitBtn").disabled = false;
             };
@@ -292,18 +362,25 @@
             const message = event.message;
             const data    = event.data || {};
 
-            // Update progress bar
-            if (PROGRESS[type] !== undefined) {
-                setProgress(PROGRESS[type]);
-            }
-
-            // Update status
+            if (PROGRESS[type] !== undefined) setProgress(PROGRESS[type]);
             document.getElementById("status").textContent = message;
-
-            // Add to stream log
             addLog(type, message, data);
 
-            // Handle completion
+            // ── Approval needed ──────────────────────────
+            if (type === "approval_needed") {
+                currentGate = data.gate;
+                showApprovalPanel(data);
+                return;
+            }
+
+            // ── Approval received ─────────────────────────
+            if (type === "approval_received") {
+                hideApprovalPanel();
+                addLog("info", `Decision: ${data.status} for ${data.gate}`, {});
+                return;
+            }
+
+            // ── Completion ────────────────────────────────
             if (type === "agent_completed") {
                 eventSource.close();
                 document.getElementById("submitBtn").disabled = false;
@@ -317,17 +394,112 @@
             if (type === "agent_failed") {
                 eventSource.close();
                 document.getElementById("submitBtn").disabled = false;
+                hideApprovalPanel();
                 document.getElementById("status").textContent = "Failed: " + message;
             }
 
-            // Show plan when planner completes
             if (type === "planner_completed" && data.steps) {
-                addLog("info", "Plan: " + data.steps.join(" → "), {});
+                addLog("info", "Plan: " + data.steps.join(" -> "), {});
             }
 
-            // Show files when codegen completes
             if (type === "codegen_completed" && data.files) {
                 addLog("info", "Files: " + data.files.join(", "), {});
+            }
+        }
+
+        function showApprovalPanel(data) {
+            document.getElementById("approvalPanel").style.display = "block";
+            document.getElementById("approvalTitle").textContent   = data.title;
+            document.getElementById("approvalSummary").textContent = data.summary;
+            document.getElementById("feedbackSection").style.display = "none";
+            document.getElementById("feedbackInput").value = "";
+
+            // Build details HTML
+            const details  = data.details || {};
+            const detailEl = document.getElementById("approvalDetails");
+            detailEl.innerHTML = "";
+
+            if (details.steps) {
+                details.steps.forEach((step, i) => {
+                    const div = document.createElement("div");
+                    div.className   = "approval-item";
+                    div.textContent = `${i + 1}. ${step}`;
+                    detailEl.appendChild(div);
+                });
+            }
+
+            if (details.files) {
+                details.files.forEach(file => {
+                    const div      = document.createElement("div");
+                    div.className  = "approval-item";
+                    const tag      = file.action || file.action_type || "create";
+                    const tagClass = tag === "create" ? "tag-create" :
+                                     tag === "modify" ? "tag-modify" : "tag-delete";
+                    div.innerHTML  = `<span class="${tagClass}">[${tag}]</span> ${file.file} (${file.lines || 0} lines)`;
+                    detailEl.appendChild(div);
+                });
+            }
+
+            if (details.branch) {
+                const div = document.createElement("div");
+                div.className   = "approval-item";
+                div.textContent = `Branch: ${details.branch}`;
+                detailEl.appendChild(div);
+            }
+
+            if (details.commit_message) {
+                const div = document.createElement("div");
+                div.className   = "approval-item";
+                div.textContent = `Commit: ${details.commit_message.split("\n")[0]}`;
+                detailEl.appendChild(div);
+            }
+
+            document.getElementById("status").textContent = "Waiting for your approval...";
+            addLog("warning", `Approval needed: ${data.title}`, {});
+        }
+
+        function hideApprovalPanel() {
+            document.getElementById("approvalPanel").style.display = "none";
+            currentGate = null;
+        }
+
+        function showFeedback() {
+            document.getElementById("feedbackSection").style.display = "block";
+            document.getElementById("feedbackInput").focus();
+        }
+
+        async function submitApproval(status) {
+            if (!currentSessionId || !currentGate) return;
+
+            const feedback = status === "modified"
+                ? document.getElementById("feedbackInput").value.trim()
+                : "";
+
+            if (status === "modified" && !feedback) {
+                alert("Please describe what changes you want.");
+                return;
+            }
+
+            try {
+                await fetch(`/approval/${currentSessionId}/${currentGate}/respond`, {
+                    method:  "POST",
+                    headers: {
+                        "Content-Type":  "application/json",
+                        "Authorization": "Bearer " + token
+                    },
+                    body: JSON.stringify({ status, feedback })
+                });
+
+                addLog(
+                    status === "approved" ? "success" : "warning",
+                    `You ${status} the ${currentGate} gate`,
+                    {}
+                );
+
+                hideApprovalPanel();
+
+            } catch (err) {
+                alert("Failed to submit approval: " + err.message);
             }
         }
 
@@ -336,7 +508,7 @@
             const line = document.createElement("div");
             line.className = "log-line";
 
-            const icons = {
+            const prefix = {
                 "agent_started":      ">>",
                 "planner_started":    "  Planner:",
                 "planner_completed":  "  Planner:",
@@ -358,20 +530,24 @@
                 "pr_created":         "  PR:",
                 "agent_completed":    ">> Done:",
                 "agent_failed":       ">> Error:",
-                "info":               "  Info:"
+                "approval_needed":    ">> Approval:",
+                "approval_received":  ">> Decision:",
+                "info":               "  Info:",
+                "warning":            "  Notice:",
+                "success":            "  OK:"
             };
 
-            const icon = icons[type] || "  ";
-
-            if (type === "agent_completed" || type === "pr_created") {
+            if (type === "agent_completed" || type === "pr_created" || type === "success") {
                 line.classList.add("success");
             } else if (type === "agent_failed") {
                 line.classList.add("error");
-            } else if (type === "info") {
+            } else if (type === "info" || type === "approval_needed") {
                 line.classList.add("info");
+            } else if (type === "warning" || type === "approval_received") {
+                line.classList.add("warning");
             }
 
-            line.textContent = icon + " " + message;
+            line.textContent = (prefix[type] || "  ") + " " + message;
             log.appendChild(line);
             log.scrollTop = log.scrollHeight;
         }
